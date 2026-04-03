@@ -68,28 +68,4 @@ Confidence is computed from the number of unique matched “signals”:
 * signals = matched category keywords + matched urgency keywords (+ a custom-rule signal when it triggers)
 * more matched signals => higher confidence (capped for stability)
 
-## Custom Rule (Required)
-
-This stands out and is intentionally simple:
-* If the message contains `refund`, then:
-  * `category = Billing`
-  * `priority = P0`
-
-This custom rule is implemented in `RuleBasedTicketAnalyzer` and also adds a dedicated signal string so you can see it in the UI result.
-
-## Reflection (Short)
-
-Design trade-offs:
-* I kept the analyzer rule-based and transparent to match the “interview-friendly” requirement.
-* I chose keyword substring checks (instead of NLP libraries) for reliability and simplicity.
-* I persisted extracted keywords + urgency signals + overall signals so the “why” remains visible after refresh.
-
-Limitations:
-* Keyword matching can misclassify edge cases (no stemming, no semantic understanding).
-* Confidence is heuristic and not calibrated like a real ML probability.
-
-What I would improve with more time:
-* Add more curated keyword patterns and more targeted unit tests per category.
-* Expand normalization (tokenization, punctuation handling) while keeping the logic explainable.
-* Add pagination to `GET /tickets` if the dataset grows.
 
