@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ticket Triage</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    textarea { width: 100%; height: 120px; padding: 10px; font-size: 14px; }
+    button { padding: 10px 14px; font-size: 14px; cursor: pointer; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .muted { color: #666; font-size: 13px; }
+    .error { color: #b00020; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px 8px; vertical-align: top; }
+    th { text-align: left; background: #fafafa; }
+    .pill { display: inline-block; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; margin-right: 6px; font-size: 12px; background: #fff; }
+    code { background: #f6f6f6; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>AI-powered Support Ticket Triage</h1>
+  <div class="muted">
+    Rule-based triage (no external AI). Custom rule: message containing <code>refund</code> becomes <b>Billing</b> with <b>P0</b>.
+  </div>
+
+  <div class="card">
+    <form id="analyzeForm">
+      <div class="muted" style="margin-bottom: 8px;">
+        Paste a support message:
+      </div>
+      <textarea id="message" placeholder="e.g., Urgent: I need a refund ASAP, charged twice..."></textarea>
+      <div class="row" style="margin-top: 12px;">
+        <button id="submitBtn" type="submit">Analyze Ticket</button>
+        <div id="loading" class="muted" style="display:none;">Analyzing...</div>
+      </div>
+      <div id="errorBox" class="error" style="display:none;"></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top: 0;">Analysis Result</h2>
+    <div id="resultBox" class="muted">Submit a ticket to see the analysis.</div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top: 0;">Previous Tickets (Latest First)</h2>
+    <div class="muted" id="listError" style="display:none; margin-bottom: 12px;"></div>
+    <table>
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Category</th>
+          <th>Priority</th>
+          <th>Confidence</th>
+          <th>Message</th>
+          <th>Keywords</th>
+          <th>Urgency</th>
+        </tr>
+      </thead>
+      <tbody id="ticketsBody">
+        <tr><td colspan="7" class="muted">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // Backend runs on port 8080 (see docker-compose / README).
+    const API_BASE = "http://localhost:8080";
+
+    const analyzeForm = document.getElementById("analyzeForm");
+    const messageEl = document.getElementById("message");
+    const submitBtn = document.getElementById("submitBtn");
+    const loadingEl = document.getElementById("loading");
+    const errorBox = document.getElementById("errorBox");
+    const resultBox = document.getElementById("resultBox");
+
+    const listError = document.getElementById("listError");
+    const ticketsBody = document.getElementById("ticketsBody");
+
+    function escapeHtml(str) {
+      return (str ?? "")
+        .toString()
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderSignalsList(label, list) {
+      const items = Array.isArray(list) ? list : [];
+      if (items.length === 0) return `<div class="muted">${escapeHtml(label)}: (none)</div>`;
+      const pills = items.map(x => `<span class="pill">${escapeHtml(x)}</span>`).join("");
+      return `<div class="muted">${escapeHtml(label)}:</div><div style="margin-top:6px;">${pills}</div>`;
+    }
+
+    async function analyzeTicket(text) {
+      const res = await fetch(`${API_BASE}/tickets/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text })
+      });
+
+      if (!res.ok) {
+        let bodyText = "";
+        try {
+          const json = await res.json();
+          bodyText = json.error || JSON.stringify(json);
+        } catch {
+          bodyText = await res.text();
+        }
+        throw new Error(bodyText || `Request failed with status ${res.status}`);
+      }
+
+      return await res.json();
+    }
+
+    async function loadTickets() {
+      listError.style.display = "none";
+      ticketsBody.innerHTML = `<tr><td colspan="7" class="muted">Loading...</td></tr>`;
+
+      try {
+        const res = await fetch(`${API_BASE}/tickets`);
+        if (!res.ok) throw new Error(`Failed to load tickets: ${res.status}`);
+        const tickets = await res.json();
+
+        if (!Array.isArray(tickets) || tickets.length === 0) {
+          ticketsBody.innerHTML = `<tr><td colspan="7" class="muted">No tickets yet.</td></tr>`;
+          return;
+        }
+
+        ticketsBody.innerHTML = tickets.map(t => {
+          const when = t.createdAt ? escapeHtml(t.createdAt) : "";
+          const confidencePct = typeof t.confidence === "number" ? Math.round(t.confidence * 100) + "%" : "";
+
+          const keywords = Array.isArray(t.keywords) ? t.keywords : [];
+          const urgency = Array.isArray(t.urgencySignals) ? t.urgencySignals : [];
+
+          const keywordsText = keywords.length ? keywords.map(escapeHtml).join(", ") : "(none)";
+          const urgencyText = urgency.length ? urgency.map(escapeHtml).join(", ") : "(none)";
+
+          const msg = t.message ? escapeHtml(t.message) : "";
+          return `
+            <tr>
+              <td>${when}</td>
+              <td>${escapeHtml(t.category || "")}</td>
+              <td>${escapeHtml(t.priority || "")}</td>
+              <td>${confidencePct}</td>
+              <td>${msg}</td>
+              <td>${keywordsText}</td>
+              <td>${urgencyText}</td>
+            </tr>
+          `;
+        }).join("");
+      } catch (e) {
+        ticketsBody.innerHTML = "";
+        listError.style.display = "block";
+        listError.textContent = e.message || String(e);
+      }
+    }
+
+    analyzeForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+
+      const text = messageEl.value.trim();
+      if (!text) {
+        errorBox.style.display = "block";
+        errorBox.textContent = "Please enter a ticket message.";
+        return;
+      }
+
+      submitBtn.disabled = true;
+      loadingEl.style.display = "inline";
+      resultBox.textContent = "Analyzing...";
+
+      try {
+        const analysis = await analyzeTicket(text);
+
+        const confidencePct = typeof analysis.confidence === "number"
+          ? Math.round(analysis.confidence * 100) + "%"
+          : "N/A";
+
+        const category = analysis.category || "";
+        const priority = analysis.priority || "";
+
+        resultBox.innerHTML = `
+          <div><b>Category:</b> ${escapeHtml(category)}</div>
+          <div><b>Priority:</b> ${escapeHtml(priority)}</div>
+          <div><b>Confidence:</b> ${escapeHtml(confidencePct)}</div>
+          <div style="height:10px;"></div>
+          ${renderSignalsList("Keywords", analysis.keywords)}
+          <div style="height:10px;"></div>
+          ${renderSignalsList("Urgency signals", analysis.urgencySignals)}
+          <div style="height:10px;"></div>
+          ${renderSignalsList("Signals", analysis.signals)}
+        `;
+
+        messageEl.value = "";
+        await loadTickets();
+      } catch (err) {
+        errorBox.style.display = "block";
+        errorBox.textContent = err.message || String(err);
+        resultBox.textContent = "Failed to analyze ticket.";
+      } finally {
+        submitBtn.disabled = false;
+        loadingEl.style.display = "none";
+      }
+    });
+
+    // Initial load.
+    loadTickets();
+  </script>
+</body>
+</html>
+
